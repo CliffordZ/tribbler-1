@@ -3,11 +3,15 @@ package tribserver
 import (
 	"errors"
 
+	"net/rpc"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
 
+const LeaseMode leaseMode = Never
+
 type tribServer struct {
-	// TODO: implement this!
+	libstore *libstore.Libstore
+  listener *net.Listener
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -17,7 +21,36 @@ type tribServer struct {
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
 func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
-	return nil, errors.New("not implemented")
+  // Create libstore
+  libstore, err := libstore.NewLibstore(masterServerHostPort, myHostPort, leaseMode)
+  if err != nil {
+    return nil, err
+  }
+
+  // Create the server socket that will listen for incoming RPCs.
+  listener, err := net.Listen("tcp", myHostPort)
+  if err != nil {
+    return nil, err
+  }
+
+  // Create TribServer with libstore and listener
+  tribServer := &tribServer{
+    libstore: libstore,
+    listener: listener,
+  }
+
+  // Wrap the tribServer before registering it for RPC.
+  err = rpc.RegisterName("TribServer", tribrpc.Wrap(tribServer))
+  if err != nil {
+    return nil, err
+  }
+
+  // Setup the HTTP handler that will server incoming RPCs and
+  // serve requests in a background goroutine.
+  rpc.HandleHTTP()
+  go http.Serve(listener, nil)
+
+  return tribServer, nil
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
