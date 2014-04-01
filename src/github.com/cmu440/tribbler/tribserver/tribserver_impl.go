@@ -5,14 +5,22 @@ import (
 
 	"net/rpc"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
+        "time"
+        "encoding/json"
 )
 
-const LeaseMode leaseMode = Never
+const (
+  LeaseMode leaseMode = Never
+  subscriptionToken string = ":s"
+  tribbleToken string = ":t"
+  userToken = ":u"
+)
 
 type tribServer struct {
 	libstore *libstore.Libstore
   listener *net.Listener
 }
+
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
 // is the master storage server's host:port and port is this port number on which
@@ -54,23 +62,100 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
-	return errors.New("not implemented")
+  _, err := ts.libstore.Get(args.UserID+userToken)
+  if err == nil {
+    reply.Status = Exists
+    return nil
+  }
+  err := ts.libstore.Put(args.UserID+userToken, "")
+  if err == nil {
+    reply.Status = OK
+  }
+  return err
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+  _, err := ts.libstore.Get(args.UserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchUser
+    return err
+  }
+  _, err := ts.libstore.Get(args.TargetUserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchTargetUser
+    return err
+  }
+  key := args.UserID+subscriptionToken
+  err := ts.libstore.AppendToList(key, args.TargetUserID)
+  if err == nil {
+    reply.Status = OK
+  }
+  return err
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	return errors.New("not implemented")
+  _, err := ts.libstore.Get(args.UserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchUser
+    return err
+  }
+  _, err := ts.libstore.Get(args.TargetUserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchTargetUser
+    return err
+  }
+  key := args.UserID+subscriptionToken
+  err := ts.libstore.RemoveFromList(key, args.TargetUserID)
+  if err == nil {
+    reply.Status = OK
+  }
+  return err
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
-	return errors.New("not implemented")
+  _, err := ts.libstore.Get(args.UserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchUser
+    return err
+  }
+  key := args.UserID+subscriptionToken
+  subscriptions, err := ts.libstore.GetList(key)
+  if err == nil {
+    reply.Status = OK
+    reply.UserIDs = subscriptions
+  }
+  return err
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
-	return errors.New("not implemented")
+  _, err := ts.libstore.Get(args.UserID+userToken)
+  if err != nil {
+    reply.Status = NoSuchUser
+    return err
+  }
+  tribbleID := args.UserID + tribbleToken + ":" + time.Now().UnixNano()
+  userTribbleID := args.UserID+tribbleToken
+
+  // Marshalled tribble
+  tribble := &Tribble {
+    UserID : args.UserID,
+    Posted : time.Now(),
+    Contents : args.Contents,
+  }
+  marshalledTribble, _ := string(json.Marshal(tribble)[:])
+
+  // Store tribble
+  err := ts.libstore.AppendToList(tribbleID, marshalledTribble)
+  if err != nil {
+    return err
+  }
+
+  //store tribble ID into user list
+  err := ts.libstore.AppendToList(userTribbleID, tribbleID)
+  if err == nil {
+    reply.Status == OK
+  }
+  return err
 }
 
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
