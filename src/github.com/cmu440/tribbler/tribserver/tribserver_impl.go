@@ -3,14 +3,17 @@ package tribserver
 import (
 	"errors"
 
+	"net"
+	"net/http"
 	"net/rpc"
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
-        "time"
-        "encoding/json"
+  "time"
+  "encoding/json"
 )
 
 const (
-  LeaseMode leaseMode = Never
+  leaseMode libstore.LeaseMode = libstore.Never
   subscriptionToken string = ":s"
   tribbleToken string = ":t"
   userToken = ":u"
@@ -43,8 +46,8 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 
   // Create TribServer with libstore and listener
   tribServer := &tribServer{
-    libstore: libstore,
-    listener: listener,
+    libstore: &libstore,
+    listener: &listener,
   }
 
   // Wrap the tribServer before registering it for RPC.
@@ -62,98 +65,99 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 }
 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
-  _, err := ts.libstore.Get(args.UserID+userToken)
+  _, err := (*ts.libstore).Get(args.UserID+userToken)
   if err == nil {
-    reply.Status = Exists
+    reply.Status = tribrpc.Exists
     return nil
   }
-  err := ts.libstore.Put(args.UserID+userToken, "")
+  err = (*ts.libstore).Put(args.UserID+userToken, "")
   if err == nil {
-    reply.Status = OK
+    reply.Status = tribrpc.OK
   }
   return err
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-  _, err := ts.libstore.Get(args.UserID+userToken)
+  _, err := (*ts.libstore).Get(args.UserID+userToken)
   if err != nil {
-    reply.Status = NoSuchUser
+    reply.Status = tribrpc.NoSuchUser
     return err
   }
-  _, err := ts.libstore.Get(args.TargetUserID+userToken)
+  _, err = (*ts.libstore).Get(args.TargetUserID+userToken)
   if err != nil {
-    reply.Status = NoSuchTargetUser
+    reply.Status = tribrpc.NoSuchTargetUser
     return err
   }
   key := args.UserID+subscriptionToken
-  err := ts.libstore.AppendToList(key, args.TargetUserID)
+  err = (*ts.libstore).AppendToList(key, args.TargetUserID)
   if err == nil {
-    reply.Status = OK
+    reply.Status = tribrpc.OK
   }
   return err
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-  _, err := ts.libstore.Get(args.UserID+userToken)
+  _, err := (*ts.libstore).Get(args.UserID+userToken)
   if err != nil {
-    reply.Status = NoSuchUser
+    reply.Status = tribrpc.NoSuchUser
     return err
   }
-  _, err := ts.libstore.Get(args.TargetUserID+userToken)
+  _, err = (*ts.libstore).Get(args.TargetUserID+userToken)
   if err != nil {
-    reply.Status = NoSuchTargetUser
+    reply.Status = tribrpc.NoSuchTargetUser
     return err
   }
   key := args.UserID+subscriptionToken
-  err := ts.libstore.RemoveFromList(key, args.TargetUserID)
+  err = (*ts.libstore).RemoveFromList(key, args.TargetUserID)
   if err == nil {
-    reply.Status = OK
+    reply.Status = tribrpc.OK
   }
   return err
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
-  _, err := ts.libstore.Get(args.UserID+userToken)
+  _, err := (*ts.libstore).Get(args.UserID+userToken)
   if err != nil {
-    reply.Status = NoSuchUser
+    reply.Status = tribrpc.NoSuchUser
     return err
   }
   key := args.UserID+subscriptionToken
-  subscriptions, err := ts.libstore.GetList(key)
+  subscriptions, err := (*ts.libstore).GetList(key)
   if err == nil {
-    reply.Status = OK
+    reply.Status = tribrpc.OK
     reply.UserIDs = subscriptions
   }
   return err
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
-  _, err := ts.libstore.Get(args.UserID+userToken)
+  _, err := (*ts.libstore).Get(args.UserID+userToken)
   if err != nil {
-    reply.Status = NoSuchUser
+    reply.Status = tribrpc.NoSuchUser
     return err
   }
-  tribbleID := args.UserID + tribbleToken + ":" + time.Now().UnixNano()
+  tribbleID := args.UserID + tribbleToken + ":" + string(time.Now().UnixNano())
   userTribbleID := args.UserID+tribbleToken
 
   // Marshalled tribble
-  tribble := &Tribble {
+  tribble := &tribrpc.Tribble{
     UserID : args.UserID,
     Posted : time.Now(),
     Contents : args.Contents,
   }
-  marshalledTribble, _ := string(json.Marshal(tribble)[:])
+  marshalledBytes, _ := json.Marshal(tribble)
+  marshalledTribble := string(marshalledBytes[:])
 
   // Store tribble
-  err := ts.libstore.AppendToList(tribbleID, marshalledTribble)
+  err = (*ts.libstore).AppendToList(tribbleID, marshalledTribble)
   if err != nil {
     return err
   }
 
   //store tribble ID into user list
-  err := ts.libstore.AppendToList(userTribbleID, tribbleID)
+  err = (*ts.libstore).AppendToList(userTribbleID, tribbleID)
   if err == nil {
-    reply.Status == OK
+    reply.Status = tribrpc.OK
   }
   return err
 }
