@@ -17,7 +17,7 @@ const (
 	subscriptionToken string             = ":s"
 	tribbleToken      string             = ":t"
 	userToken         string             = ":u"
-  maxTribbles       int                = 100
+	maxTribbles       int                = 100
 )
 
 type tribServer struct {
@@ -170,30 +170,30 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 	userTribbleID := args.UserID + tribbleToken
 
-  tribbleIDs, err := (*ts.libstore).GetList(userTribbleID)
+	tribbleIDs, err := (*ts.libstore).GetList(userTribbleID)
 	if err != nil {
 		return err
 	}
 
-  var tribbles [maxTribbles]tribrpc.Tribble
+	var tribbles [maxTribbles]tribrpc.Tribble
 
-  // Fetch first 100 tribbles for the user
-  for i := 0; i < maxTribbles && i < len(tribbleIDs); i++ {
-    tribble := tribrpc.Tribble{}
-    marshalledTribble, err := (*ts.libstore).Get(tribbleIDs[i])
-    if err != nil {
-      return err
-    }
+	// Fetch first 100 tribbles for the user
+	for i := 0; i < maxTribbles && i < len(tribbleIDs); i++ {
+		tribble := tribrpc.Tribble{}
+		marshalledTribble, err := (*ts.libstore).Get(tribbleIDs[i])
+		if err != nil {
+			return err
+		}
 
-	  json.Unmarshal([]byte(marshalledTribble), tribble)
-    tribbles[i] = tribble
-  }
+		json.Unmarshal([]byte(marshalledTribble), tribble)
+		tribbles[i] = tribble
+	}
 
-  reply.Status = tribrpc.OK
-  reply.Tribbles = tribbles[:]
-  return nil
+	reply.Status = tribrpc.OK
+	reply.Tribbles = tribbles[:]
+	return nil
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-  return nil
+	return nil
 }
