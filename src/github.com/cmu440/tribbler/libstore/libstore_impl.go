@@ -51,7 +51,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	args := &storagerpc.GetServersArgs{}
 	reply := &storagerpc.GetServersReply{}
 	for i := 0; i < maxAttempts; i++ {
-		if err = masterServer.Call("TribServer.CreateUser", args, reply); err != nil {
+		if err = masterServer.Call("StorageServer.GetServers", args, reply); err != nil {
 			return nil, err
 		}
 
@@ -65,7 +65,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 
 	// Return error if storage server connection failed after maxAttempts attempts
 	if reply.Status == storagerpc.NotReady {
-		return nil, errors.New("Unable to connect to ServerStorage")
+		return nil, errors.New("Unable to connect to StorageServer")
 	}
 
 	// Create libstore and register it for RPC callbacks
