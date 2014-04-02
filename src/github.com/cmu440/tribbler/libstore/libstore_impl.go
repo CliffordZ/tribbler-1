@@ -2,12 +2,18 @@ package libstore
 
 import (
 	"errors"
-
+	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"net/rpc"
+	"time"
+)
+
+const (
+	maxAttempts int = 5
 )
 
 type libstore struct {
-	// TODO: implement this!
+	servers []storagerpc.Node
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -35,7 +41,42 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+	// Conncet to master server
+	masterServer, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch list of servers, repeating up to retryAttempts times
+	args := &storagerpc.GetServersArgs{}
+	reply := &storagerpc.GetServersReply{}
+	for i := 0; i < maxAttempts; i++ {
+		if err = masterServer.Call("TribServer.CreateUser", args, reply); err != nil {
+			return nil, err
+		}
+
+		// Sleep and retry if server not ready
+		if reply.Status == storagerpc.NotReady {
+			time.Sleep(time.Second)
+		} else {
+			break
+		}
+	}
+
+	// Return error if storage server connection failed after maxAttempts attempts
+	if reply.Status == storagerpc.NotReady {
+		return nil, errors.New("Unable to connect to ServerStorage")
+	}
+
+	// Create libstore and register it for RPC callbacks
+	libstore := &libstore{
+		servers: reply.Servers,
+	}
+	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
+	if err != nil {
+		return nil, err
+	}
+	return libstore, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
