@@ -20,23 +20,23 @@ const (
 
 type libstore struct {
 	servers  map[uint32]*rpc.Client // Map from NodeID to storage server connection
-  mode     LeaseMode
-  hostport string
-  nodeID   uint32 // Used until Part 2 is complete
+	mode     LeaseMode
+	hostport string
+	nodeID   uint32 // Used until Part 2 is complete
 }
 
 var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
 
 func determineNode(ls *libstore, key string) *rpc.Client {
-  var minNodeID uint32 = math.MaxUint32
-  hash := StoreHash(strings.Split(key, ":")[0])
+	var minNodeID uint32 = math.MaxUint32
+	hash := StoreHash(strings.Split(key, ":")[0])
 
-  for nodeID := range ls.servers {
-    if nodeID >= hash && nodeID < minNodeID {
-      minNodeID = nodeID
-    }
-  }
-  return ls.servers[minNodeID]
+	for nodeID := range ls.servers {
+		if nodeID >= hash && nodeID < minNodeID {
+			minNodeID = nodeID
+		}
+	}
+	return ls.servers[minNodeID]
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -91,24 +91,24 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		return nil, errors.New("Unable to connect to StorageServer")
 	}
 
-  // Allocate map for node id to server connection
-  servers := make(map[uint32]*rpc.Client)
+	// Allocate map for node id to server connection
+	servers := make(map[uint32]*rpc.Client)
 
-  for _, node := range reply.Servers {
-    server, err := rpc.DialHTTP("tcp", node.HostPort)
-    if err != nil {
-      return nil, err
-    }
+	for _, node := range reply.Servers {
+		server, err := rpc.DialHTTP("tcp", node.HostPort)
+		if err != nil {
+			return nil, err
+		}
 
-    servers[node.NodeID] = server
-  }
+		servers[node.NodeID] = server
+	}
 
-  // Create libstore and register it for RPC callbacks
+	// Create libstore and register it for RPC callbacks
 	libstore := &libstore{
-		servers: servers,
-    mode: mode,
-    hostport: myHostPort,
-    nodeID: reply.Servers[0].NodeID,
+		servers:  servers,
+		mode:     mode,
+		hostport: myHostPort,
+		nodeID:   reply.Servers[0].NodeID,
 	}
 	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
 	if err != nil {
@@ -118,104 +118,104 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-  routedServer := determineNode(ls, key)
-  // TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
-  wantLease := false
+	routedServer := determineNode(ls, key)
+	// TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
+	wantLease := false
 
 	args := &storagerpc.GetArgs{
-    Key: key,
-    WantLease: wantLease,
-    HostPort: ls.hostport,
-  }
+		Key:       key,
+		WantLease: wantLease,
+		HostPort:  ls.hostport,
+	}
 	reply := &storagerpc.GetReply{}
-  if err := routedServer.Call("StorageServer.Get", args, reply); err != nil {
-    return "", err
-  }
+	if err := routedServer.Call("StorageServer.Get", args, reply); err != nil {
+		return "", err
+	}
 
-  if reply.Status == storagerpc.OK {
-    return reply.Value, nil
-  } else {
-    return "", errors.New("Error in Get request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
-  }
+	if reply.Status == storagerpc.OK {
+		return reply.Value, nil
+	} else {
+		return "", errors.New("Error in Get request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
+	}
 }
 
 func (ls *libstore) Put(key, value string) error {
-  routedServer := determineNode(ls, key)
+	routedServer := determineNode(ls, key)
 
 	args := &storagerpc.PutArgs{
-    Key: key,
-    Value: value,
-  }
+		Key:   key,
+		Value: value,
+	}
 	reply := &storagerpc.PutReply{}
-  if err := routedServer.Call("StorageServer.Put", args, reply); err != nil {
-    return err
-  }
+	if err := routedServer.Call("StorageServer.Put", args, reply); err != nil {
+		return err
+	}
 
-  if reply.Status == storagerpc.OK {
-    return nil
-  } else {
-    return errors.New("Error in Put request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
-  }
+	if reply.Status == storagerpc.OK {
+		return nil
+	} else {
+		return errors.New("Error in Put request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
+	}
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-  routedServer := determineNode(ls, key)
-  // TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
-  wantLease := false
+	routedServer := determineNode(ls, key)
+	// TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
+	wantLease := false
 
 	args := &storagerpc.GetArgs{
-    Key: key,
-    WantLease: wantLease,
-    HostPort: ls.hostport,
-  }
+		Key:       key,
+		WantLease: wantLease,
+		HostPort:  ls.hostport,
+	}
 	reply := &storagerpc.GetListReply{}
-  if err := routedServer.Call("StorageServer.GetList", args, reply); err != nil {
-    return nil, err
-  }
+	if err := routedServer.Call("StorageServer.GetList", args, reply); err != nil {
+		return nil, err
+	}
 
-  if reply.Status == storagerpc.OK {
-    return reply.Value, nil
-  } else {
-    return nil, errors.New("Error in GetList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
-  }
+	if reply.Status == storagerpc.OK {
+		return reply.Value, nil
+	} else {
+		return nil, errors.New("Error in GetList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
+	}
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-  routedServer := determineNode(ls, key)
+	routedServer := determineNode(ls, key)
 
 	args := &storagerpc.PutArgs{
-    Key: key,
-    Value: removeItem,
-  }
+		Key:   key,
+		Value: removeItem,
+	}
 	reply := &storagerpc.PutReply{}
-  if err := routedServer.Call("StorageServer.RemoveFromList", args, reply); err != nil {
-    return err
-  }
+	if err := routedServer.Call("StorageServer.RemoveFromList", args, reply); err != nil {
+		return err
+	}
 
-  if reply.Status == storagerpc.OK {
-    return nil
-  } else {
-    return errors.New("Error in RemoveFromList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
-  }
+	if reply.Status == storagerpc.OK {
+		return nil
+	} else {
+		return errors.New("Error in RemoveFromList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
+	}
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-  routedServer := determineNode(ls, key)
+	routedServer := determineNode(ls, key)
 
 	args := &storagerpc.PutArgs{
-    Key: key,
-    Value: newItem,
-  }
+		Key:   key,
+		Value: newItem,
+	}
 	reply := &storagerpc.PutReply{}
-  if err := routedServer.Call("StorageServer.AppendToList", args, reply); err != nil {
-    return err
-  }
+	if err := routedServer.Call("StorageServer.AppendToList", args, reply); err != nil {
+		return err
+	}
 
-  if reply.Status == storagerpc.OK {
-    return nil
-  } else {
-    return errors.New("Error in AppendToList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
-  }
+	if reply.Status == storagerpc.OK {
+		return nil
+	} else {
+		return errors.New("Error in AppendToList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
+	}
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
