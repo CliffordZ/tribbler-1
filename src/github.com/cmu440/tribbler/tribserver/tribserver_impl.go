@@ -10,6 +10,9 @@ import (
 	"net/rpc"
 	"strings"
 	"time"
+
+	"log"
+	"os"
 )
 
 const (
@@ -24,6 +27,8 @@ type tribServer struct {
 	libstore *libstore.Libstore
 	listener *net.Listener
 }
+
+var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
 // is the master storage server's host:port and port is this port number on which
