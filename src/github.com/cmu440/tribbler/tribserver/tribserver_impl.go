@@ -1,14 +1,14 @@
 package tribserver
 
 import (
-	"errors"
-
+	"container/list"
 	"encoding/json"
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 	"net"
 	"net/http"
 	"net/rpc"
+	"strings"
 	"time"
 )
 
@@ -195,5 +195,71 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
+	// check that user exists
+	_, err := (*ts.libstore).Get(args.UserID + userToken)
+	if err != nil {
+		reply.Status = tribrpc.NoSuchUser
+		return err
+	}
+
+	//get user's subscriptions
+	key := args.UserID + subscriptionToken
+	subscriptions, err := (*ts.libstore).GetList(key)
+
+	//if user has no subscriptions
+	if len(subscriptions) == 0 {
+		reply.Status = tribrpc.OK
+		reply.Tribbles = nil
+		return nil
+	}
+
+	//get tribbles from all subscriptions
+	allTribbles := list.New()
+	for i := range subscriptions {
+		targetUserID := subscriptions[i] + tribbleToken
+
+		tribbleIDs, err := (*ts.libstore).GetList(targetUserID)
+		if err != nil {
+			return err
+		}
+		if len(tribbleIDs) > 0 {
+			allTribbles.PushBack(tribbleIDs)
+		}
+	}
+
+	//grab 100 most recent tribbles
+	var tribbles [maxTribbles]tribrpc.Tribble
+	for i := 0; i < maxTribbles && allTribbles.Len() > 0; i++ {
+
+		//get most recent Tribble
+		mostRecentTribbleID := allTribbles.Front().Value.([]string)[0]
+		for e := allTribbles.Front(); e != nil; e = e.Next() {
+			subsTribbles := e.Value.([]string)
+			mostRecentTime := strings.Split(mostRecentTribbleID, ":")[2]
+			tempTime := strings.Split(subsTribbles[0], ":")[2]
+
+			if tempTime < mostRecentTime {
+				mostRecentTribbleID = subsTribbles[0]
+
+				//remove tribble from list
+				subsTribbles = subsTribbles[1:]
+				if len(subsTribbles) > 0 {
+					allTribbles.InsertBefore(subsTribbles, e)
+				}
+				allTribbles.Remove(e)
+			}
+		}
+
+		tribble := tribrpc.Tribble{}
+		marshalledTribble, err := (*ts.libstore).Get(mostRecentTribbleID)
+		if err != nil {
+			return err
+		}
+
+		json.Unmarshal([]byte(marshalledTribble), tribble)
+		tribbles[i] = tribble
+	}
+	reply.Status = tribrpc.OK
+	reply.Tribbles = tribbles[:]
 	return nil
 }
