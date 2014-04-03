@@ -11,11 +11,11 @@ import (
 )
 
 type storageServer struct {
-	listener             *net.Listener
-	masterServerHostPort string
-	numNodes             int
-	servers              []storagerpc.Node
-	numRegistered        int
+	numNodes       int
+	servers        []storagerpc.Node
+	numRegistered  int
+	newServer      chan storagerpc.Node
+	newServerReply chan storagerpc.RegisterReply
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -33,15 +33,13 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		return nil, err
 	}
 
-	storageServer := &storageServer{
-		listener:             &listener,
-		masterServerHostPort: masterServerHostPort,
-		numNodes:             numNodes,
-		servers:              make([]storagerpc.Node, numNodes),
-		numRegistered:        1,
+	ss := &storageServer{
+		numNodes:      numNodes,
+		servers:       make([]storagerpc.Node, numNodes),
+		numRegistered: 1,
 	}
 
-	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(storageServer))
+	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
 	if err != nil {
 		return nil, err
 	}
@@ -71,48 +69,58 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 			if reply.Status == storagerpc.NotReady {
 				time.Sleep(time.Second)
 			} else {
-				storageServer.servers = reply.Servers
-				storageServer.numRegistered = numNodes
-				return storageServer, nil
+				ss.servers = reply.Servers
+				ss.numRegistered = numNodes
+				return ss, nil
 			}
 		}
 	} else {
-		//TODO: this seems wrong. unsure if there is a cleaner way to check if all servers registered
-		storageServer.servers[0] = *node
-		for {
-			if storageServer.numRegistered == numNodes {
-				return storageServer, nil
+		//Put master server in servers list
+		ss.servers[0] = *node
+		//Loop while not all nodes have registered yet
+		for ss.numRegistered < numNodes {
+			//Get new server from channel in RegisterServer
+			newServer := <-ss.newServer
+			//Find if server has already registered
+			alreadyRegistered := false
+			for i := range ss.servers {
+				if ss.servers[i] == newServer {
+					alreadyRegistered = true
+				}
+			}
+			//If server has not already registered, add to list of registered servers
+			if !alreadyRegistered {
+				ss.servers[ss.numRegistered] = newServer
+				ss.numRegistered++
+			}
+			//If not all servers registered, reply with NotReady
+			if ss.numRegistered < ss.numNodes {
+				reply := &storagerpc.RegisterReply{
+					Status:  storagerpc.NotReady,
+					Servers: nil,
+				}
+				ss.newServerReply <- *reply
 			} else {
-				//sleep so we're not running in a tight loop?
-				time.Sleep(time.Second)
+				//If all serversRegistered, reply with OK
+				reply := &storagerpc.RegisterReply{
+					Status:  storagerpc.OK,
+					Servers: ss.servers,
+				}
+				ss.newServerReply <- *reply
 			}
 		}
 	}
-	return nil, errors.New("Should not have reached this point")
+	return ss, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
-	//Check if node is already registered
-	alreadyRegistered := false
-	for node := range ss.servers {
-		if ss.servers[node] == args.ServerInfo {
-			alreadyRegistered = true
-		}
+	if ss.numNodes > ss.numRegistered {
+		ss.newServer <- args.ServerInfo
+		*reply = <-ss.newServerReply
+	} else {
+		reply.Status = storagerpc.OK
+		reply.Servers = ss.servers
 	}
-	//If not already registered add to list of servers
-	if !alreadyRegistered {
-		ss.servers[ss.numRegistered] = args.ServerInfo
-		ss.numRegistered++
-	}
-	//Reply NotReady if not all nodes have registered yet
-	if ss.numRegistered < ss.numNodes {
-		reply.Status = storagerpc.NotReady
-		reply.Servers = nil
-		return nil
-	}
-	//Reply OK and with servers list if all nodes have registered
-	reply.Status = storagerpc.OK
-	reply.Servers = ss.servers
 	return nil
 }
 
@@ -121,11 +129,11 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 	if ss.numNodes > ss.numRegistered {
 		reply.Status = storagerpc.NotReady
 		reply.Servers = nil
-		return nil
+	} else {
+		//If OK reply wtih servers list
+		reply.Status = storagerpc.OK
+		reply.Servers = ss.servers
 	}
-	//If OK reply wtih servers list
-	reply.Status = storagerpc.OK
-	reply.Servers = ss.servers
 	return nil
 }
 
