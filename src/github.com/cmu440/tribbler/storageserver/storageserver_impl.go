@@ -2,12 +2,17 @@ package storageserver
 
 import (
 	"errors"
-
+  "net"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+        "net/http"
+        "net/rpc"
+        "strconv"
+        "time"
 )
 
 type storageServer struct {
-	// TODO: implement this!
+  listener *net.Listener
+  masterServerHostPort string
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -19,7 +24,50 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	return nil, errors.New("not implemented")
+  listener, err := net.Listen("tcp", "localhost:"+strconv.Itoa(port))
+  if err != nil {
+    return nil, err
+  }
+
+  storageServer := &storageServer{
+    listener : &listener,
+    masterServerHostPort : masterServerHostPort,
+  }
+
+  err = rpc.RegisterName("StorageServer", storagerpc.Wrap(storageServer))
+  if err != nil {
+    return nil, err
+  }
+  
+  rpc.HandleHTTP()
+  go http.Serve(listener, nil)
+
+  node := &storagerpc.Node{
+    HostPort : "localhost:"+strconv.Itoa(port),
+    NodeID : nodeID,
+  }
+
+  //If not master server, wait for slave servers to register
+  if masterServerHostPort != "" {
+    //TODO: make calls to register to get slave's rpc
+    args := &storagerpc.RegisterArgs{
+      ServerInfo : *node,
+    }
+    reply := &storagerpc.RegisterReply{} 
+    for true {
+      if err = StorageServer.Call("StorageServer.RegisterServer", args, reply); err != nil {
+        return nil, err
+      }
+      if reply.Status == storagerpc.NotReady {
+        time.Sleep(time.Second)
+      } else {
+        break
+      }
+    }
+  }
+
+
+  return storageServer, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
