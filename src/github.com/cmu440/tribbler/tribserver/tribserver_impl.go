@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,45 +87,49 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
 	_, err = (*ts.libstore).Get(args.TargetUserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
-		return err
+		return nil
 	}
 	key := args.UserID + subscriptionToken
 	err = (*ts.libstore).AppendToList(key, args.TargetUserID)
 	if err == nil {
 		reply.Status = tribrpc.OK
+	} else {
+		reply.Status = tribrpc.Exists
 	}
-	return err
+	return nil
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
 	_, err = (*ts.libstore).Get(args.TargetUserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchTargetUser
-		return err
+		return nil
 	}
 	key := args.UserID + subscriptionToken
 	err = (*ts.libstore).RemoveFromList(key, args.TargetUserID)
 	if err == nil {
 		reply.Status = tribrpc.OK
+	} else {
+		reply.Status = tribrpc.NoSuchTargetUser
 	}
-	return err
+	return nil
 }
 
 func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply *tribrpc.GetSubscriptionsReply) error {
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
 	key := args.UserID + subscriptionToken
 	subscriptions, err := (*ts.libstore).GetList(key)
@@ -139,19 +144,20 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
-	tribbleID := args.UserID + tribbleToken + ":" + string(time.Now().UnixNano())
+	currentTime := time.Now()
+	tribbleID := args.UserID + tribbleToken + ":" + strconv.FormatInt(currentTime.UnixNano(), 10)
 	userTribbleID := args.UserID + tribbleToken
 
 	// Marshalled tribble
 	tribble := &tribrpc.Tribble{
 		UserID:   args.UserID,
-		Posted:   time.Now(),
+		Posted:   currentTime,
 		Contents: args.Contents,
 	}
 	marshalledBytes, _ := json.Marshal(tribble)
-	marshalledTribble := string(marshalledBytes[:])
+	marshalledTribble := string(marshalledBytes)
 
 	// Store tribble
 	err = (*ts.libstore).Put(tribbleID, marshalledTribble)
@@ -164,107 +170,120 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	if err == nil {
 		reply.Status = tribrpc.OK
 	}
-	return err
+	return nil
 }
 
 func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
 	userTribbleID := args.UserID + tribbleToken
 
 	tribbleIDs, err := (*ts.libstore).GetList(userTribbleID)
 	if err != nil {
-		return err
+		reply.Status = tribrpc.OK
+		return nil
 	}
 
 	var tribbles [maxTribbles]tribrpc.Tribble
+	tribbleCount := 0
 
-	// Fetch first 100 tribbles for the user
-	for i := 0; i < maxTribbles && i < len(tribbleIDs); i++ {
-		tribble := tribrpc.Tribble{}
+	// Fetch up to maxTribbles tribbles for the user
+	for i := len(tribbleIDs) - 1; i >= 0 && tribbleCount < maxTribbles; i-- {
+		tribble := &tribrpc.Tribble{}
 		marshalledTribble, err := (*ts.libstore).Get(tribbleIDs[i])
 		if err != nil {
 			return err
 		}
 
 		json.Unmarshal([]byte(marshalledTribble), tribble)
-		tribbles[i] = tribble
+		tribbles[tribbleCount] = *tribble
+
+		tribbleCount++
 	}
 
 	reply.Status = tribrpc.OK
-	reply.Tribbles = tribbles[:]
+	reply.Tribbles = tribbles[:tribbleCount]
 	return nil
 }
 
 func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, reply *tribrpc.GetTribblesReply) error {
-	// check that user exists
+	// Check that user exists
 	_, err := (*ts.libstore).Get(args.UserID + userToken)
 	if err != nil {
 		reply.Status = tribrpc.NoSuchUser
-		return err
+		return nil
 	}
 
-	//get user's subscriptions
+	// Get user's subscriptions
 	key := args.UserID + subscriptionToken
 	subscriptions, err := (*ts.libstore).GetList(key)
 
-	//if user has no subscriptions
+	// Return if user has no subscriptions
 	if len(subscriptions) == 0 {
 		reply.Status = tribrpc.OK
 		reply.Tribbles = nil
 		return nil
 	}
 
-	//get tribbles from all subscriptions
+	// Get tribbles from all subscriptions
 	allTribbles := list.New()
 	for i := range subscriptions {
 		targetUserID := subscriptions[i] + tribbleToken
 
 		tribbleIDs, err := (*ts.libstore).GetList(targetUserID)
-		if err != nil {
-			return err
-		}
-		if len(tribbleIDs) > 0 {
+		if err == nil && len(tribbleIDs) > 0 {
 			allTribbles.PushBack(tribbleIDs)
 		}
 	}
 
-	//grab 100 most recent tribbles
+	// Grab 100 most recent tribbles
 	var tribbles [maxTribbles]tribrpc.Tribble
-	for i := 0; i < maxTribbles && allTribbles.Len() > 0; i++ {
-
-		//get most recent Tribble
-		mostRecentTribbleID := allTribbles.Front().Value.([]string)[0]
-		for e := allTribbles.Front(); e != nil; e = e.Next() {
+	var i int
+	for i = 0; i < maxTribbles && allTribbles.Len() > 0; i++ {
+		// Find most recent Tribble
+		frontTribbles := allTribbles.Front().Value.([]string)
+		mostRecentTribbleID := frontTribbles[len(frontTribbles)-1]
+		mostRecentTime := strings.Split(mostRecentTribbleID, ":")[2]
+		for e := allTribbles.Front().Next(); e != nil; e = e.Next() {
 			subsTribbles := e.Value.([]string)
-			mostRecentTime := strings.Split(mostRecentTribbleID, ":")[2]
-			tempTime := strings.Split(subsTribbles[0], ":")[2]
+			tribbleID := subsTribbles[len(subsTribbles)-1]
+			tribbleTime := strings.Split(tribbleID, ":")[2]
 
-			if tempTime < mostRecentTime {
-				mostRecentTribbleID = subsTribbles[0]
-
-				//remove tribble from list
-				subsTribbles = subsTribbles[1:]
-				if len(subsTribbles) > 0 {
-					allTribbles.InsertBefore(subsTribbles, e)
-				}
-				allTribbles.Remove(e)
+			// String comparison like this works apparently
+			if tribbleTime > mostRecentTime {
+				mostRecentTribbleID = tribbleID
+				mostRecentTime = tribbleTime
 			}
 		}
 
-		tribble := tribrpc.Tribble{}
+		// Unmarshall and store the tribble
+		tribble := &tribrpc.Tribble{}
 		marshalledTribble, err := (*ts.libstore).Get(mostRecentTribbleID)
 		if err != nil {
 			return err
 		}
 
 		json.Unmarshal([]byte(marshalledTribble), tribble)
-		tribbles[i] = tribble
+		tribbles[i] = *tribble
+
+		// Find and remove the tribble from list
+		for e := allTribbles.Front(); e != nil; e = e.Next() {
+			subsTribbles := e.Value.([]string)
+			tribbleID := subsTribbles[len(subsTribbles)-1]
+
+			if tribbleID == mostRecentTribbleID {
+				subsTribbles = subsTribbles[:len(subsTribbles)-1]
+				if len(subsTribbles) > 0 {
+					allTribbles.InsertBefore(subsTribbles, e)
+				}
+				allTribbles.Remove(e)
+			}
+		}
 	}
 	reply.Status = tribrpc.OK
-	reply.Tribbles = tribbles[:]
+	reply.Tribbles = tribbles[:i]
 	return nil
 }
