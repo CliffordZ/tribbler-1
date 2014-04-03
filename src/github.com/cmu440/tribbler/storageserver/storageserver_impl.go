@@ -1,21 +1,44 @@
 package storageserver
 
 import (
-	"errors"
+	"container/list"
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"math"
 	"net"
 	"net/http"
 	"net/rpc"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type storageServer struct {
+	nodeID         uint32
 	numNodes       int
 	servers        []storagerpc.Node
 	numRegistered  int
 	newServer      chan storagerpc.Node
 	newServerReply chan storagerpc.RegisterReply
+
+	itemDatastore map[string]string
+	listDatastore map[string]*list.List
+}
+
+// Confirm that request has been routed to correct storage server
+func isCorrectStorageServer(ss *storageServer, key string) bool {
+	var matchedNodeID, minNodeID uint32 = math.MaxUint32, math.MaxUint32
+	hash := libstore.StoreHash(strings.Split(key, ":")[0])
+
+	for _, server := range ss.servers {
+		if server.NodeID >= hash && server.NodeID < matchedNodeID {
+			matchedNodeID = server.NodeID
+		} else if server.NodeID < minNodeID {
+			minNodeID = server.NodeID
+		}
+	}
+
+	return (matchedNodeID == math.MaxUint32 && ss.nodeID == minNodeID) || ss.nodeID == matchedNodeID
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -34,9 +57,12 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	}
 
 	ss := &storageServer{
+		nodeID:        nodeID,
 		numNodes:      numNodes,
 		servers:       make([]storagerpc.Node, numNodes),
 		numRegistered: 1,
+		itemDatastore: make(map[string]string),
+		listDatastore: make(map[string]*list.List),
 	}
 
 	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
@@ -138,21 +164,113 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
-	return errors.New("not implemented")
+	if !isCorrectStorageServer(ss, args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	value, ok := ss.itemDatastore[args.Key]
+
+	if !ok {
+		reply.Status = storagerpc.KeyNotFound
+	} else {
+		reply.Status = storagerpc.OK
+		reply.Value = value
+		//TODO: Implement Leasing
+	}
+	return nil
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
-	return errors.New("not implemented")
+	if !isCorrectStorageServer(ss, args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	ls, ok := ss.listDatastore[args.Key]
+
+	if !ok {
+		reply.Status = storagerpc.KeyNotFound
+	} else {
+		values := make([]string, ls.Len())
+
+		index := 0
+		for e := ls.Front(); e != nil; e = e.Next() {
+			values[index] = e.Value.(string)
+			index++
+		}
+
+		reply.Status = storagerpc.OK
+		reply.Value = values
+	}
+	return nil
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	if !isCorrectStorageServer(ss, args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	ss.itemDatastore[args.Key] = args.Value
+
+	reply.Status = storagerpc.OK
+	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	if !isCorrectStorageServer(ss, args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	ls, ok := ss.listDatastore[args.Key]
+
+	// Create new list if one doesn't already exist
+	if !ok {
+		ls = list.New()
+	}
+
+	// Check if item is already in the list
+	for e := ls.Front(); e != nil; e = e.Next() {
+		value := e.Value.(string)
+
+		if args.Value == value {
+			reply.Status = storagerpc.ItemExists
+			return nil
+		}
+	}
+
+	ls.PushBack(args.Value)
+	reply.Status = storagerpc.OK
+	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	return errors.New("not implemented")
+	if !isCorrectStorageServer(ss, args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
+	ls, ok := ss.listDatastore[args.Key]
+
+	// If no list, reply with item not found
+	if !ok {
+		reply.Status = storagerpc.ItemNotFound
+		return nil
+	}
+
+	for e := ls.Front(); e != nil; e = e.Next() {
+		value := e.Value.(string)
+
+		if args.Value == value {
+			ls.Remove(e)
+			reply.Status = storagerpc.OK
+			return nil
+		}
+	}
+
+	// If item not found, reply with item not found
+	reply.Status = storagerpc.ItemNotFound
+	return nil
 }
