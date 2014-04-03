@@ -22,21 +22,27 @@ type libstore struct {
 	servers  map[uint32]*rpc.Client // Map from NodeID to storage server connection
 	mode     LeaseMode
 	hostport string
-	nodeID   uint32 // Used until Part 2 is complete
 }
 
 var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
 
+// Look for matching node ID, also keeping track of min node id in case of wrap around
 func determineNode(ls *libstore, key string) *rpc.Client {
-	var minNodeID uint32 = math.MaxUint32
+	var matchedNodeID, minNodeID uint32 = math.MaxUint32, math.MaxUint32
 	hash := StoreHash(strings.Split(key, ":")[0])
 
 	for nodeID := range ls.servers {
-		if nodeID >= hash && nodeID < minNodeID {
+		if nodeID >= hash && nodeID < matchedNodeID {
+			matchedNodeID = nodeID
+		} else if nodeID < minNodeID {
 			minNodeID = nodeID
 		}
 	}
-	return ls.servers[minNodeID]
+
+	if matchedNodeID == math.MaxUint32 {
+		return ls.servers[minNodeID]
+	}
+	return ls.servers[matchedNodeID]
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -108,7 +114,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		servers:  servers,
 		mode:     mode,
 		hostport: myHostPort,
-		nodeID:   reply.Servers[0].NodeID,
 	}
 	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
 	if err != nil {
