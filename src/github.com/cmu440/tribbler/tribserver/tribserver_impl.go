@@ -244,8 +244,9 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	var i int
 	for i = 0; i < maxTribbles && allTribbles.Len() > 0; i++ {
 		// Find most recent Tribble
-		frontTribbles := allTribbles.Front().Value.([]string)
-		mostRecentTribbleID := frontTribbles[len(frontTribbles)-1]
+		mostRecentTribbles := allTribbles.Front()
+		firstTribbles := mostRecentTribbles.Value.([]string)
+		mostRecentTribbleID := firstTribbles[len(firstTribbles)-1]
 		mostRecentTime := strings.Split(mostRecentTribbleID, ":")[2]
 		for e := allTribbles.Front().Next(); e != nil; e = e.Next() {
 			subsTribbles := e.Value.([]string)
@@ -254,6 +255,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 
 			// String comparison like this works apparently
 			if tribbleTime > mostRecentTime {
+				mostRecentTribbles = e
 				mostRecentTribbleID = tribbleID
 				mostRecentTime = tribbleTime
 			}
@@ -269,19 +271,13 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		json.Unmarshal([]byte(marshalledTribble), tribble)
 		tribbles[i] = *tribble
 
-		// Find and remove the tribble from list
-		for e := allTribbles.Front(); e != nil; e = e.Next() {
-			subsTribbles := e.Value.([]string)
-			tribbleID := subsTribbles[len(subsTribbles)-1]
-
-			if tribbleID == mostRecentTribbleID {
-				subsTribbles = subsTribbles[:len(subsTribbles)-1]
-				if len(subsTribbles) > 0 {
-					allTribbles.InsertBefore(subsTribbles, e)
-				}
-				allTribbles.Remove(e)
-			}
+		// Remove the tribble from list
+		removedTribbles := mostRecentTribbles.Value.([]string)
+		removedTribbles = removedTribbles[:len(removedTribbles)-1]
+		if len(removedTribbles) > 0 {
+			allTribbles.InsertBefore(removedTribbles, mostRecentTribbles)
 		}
+		allTribbles.Remove(mostRecentTribbles)
 	}
 	reply.Status = tribrpc.OK
 	reply.Tribbles = tribbles[:i]
