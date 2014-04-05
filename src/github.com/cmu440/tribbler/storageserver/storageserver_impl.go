@@ -57,12 +57,14 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	}
 
 	ss := &storageServer{
-		nodeID:        nodeID,
-		numNodes:      numNodes,
-		servers:       make([]storagerpc.Node, numNodes),
-		numRegistered: 1,
-		itemDatastore: make(map[string]string),
-		listDatastore: make(map[string]*list.List),
+		nodeID:         nodeID,
+		numNodes:       numNodes,
+		servers:        make([]storagerpc.Node, numNodes),
+		numRegistered:  1,
+		newServer:      make(chan storagerpc.Node),
+		newServerReply: make(chan storagerpc.RegisterReply),
+		itemDatastore:  make(map[string]string),
+		listDatastore:  make(map[string]*list.List),
 	}
 
 	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
