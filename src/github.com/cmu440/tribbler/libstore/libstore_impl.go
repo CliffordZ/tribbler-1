@@ -20,15 +20,15 @@ const (
 )
 
 type leaseItem struct {
-  value string
-  inserted time.Time
-  validSeconds int
+	value        string
+	inserted     time.Time
+	validSeconds int
 }
 
 type leaseList struct {
-  value []string
-  inserted time.Time
-  validSeconds int
+	value        []string
+	inserted     time.Time
+	validSeconds int
 }
 
 type libstore struct {
@@ -63,46 +63,46 @@ func determineNode(ls *libstore, key string) *rpc.Client {
 }
 
 func requiresLease(ls *libstore, key string) bool {
-  if ls.mode == Never {
-    return false
-  } else if ls.mode == Always {
-    return true
-  }
-  
-  // Fetch or create list of past requests corresponding to key
+	if ls.mode == Never {
+		return false
+	} else if ls.mode == Always {
+		return true
+	}
+
+	// Fetch or create list of past requests corresponding to key
 	requests, ok := ls.leaseManager[key]
-  if !ok {
-    requests = list.New()
-    ls.leaseManager[key] = requests
-  }
+	if !ok {
+		requests = list.New()
+		ls.leaseManager[key] = requests
+	}
 
-  currentTime := time.Now()
+	currentTime := time.Now()
 
-  // Remove all requests that are older than QueryCacheSeconds
+	// Remove all requests that are older than QueryCacheSeconds
 	for e := requests.Front(); e != nil; e = e.Next() {
 		queryTime := e.Value.(time.Time)
-    if currentTime.Sub(queryTime).Seconds() > storagerpc.QueryCacheSeconds {
-      requests.Remove(e)
-    }
-  }
+		if currentTime.Sub(queryTime).Seconds() > storagerpc.QueryCacheSeconds {
+			requests.Remove(e)
+		}
+	}
 
-  // Add new request
-  requests.PushBack(currentTime)
+	// Add new request
+	requests.PushBack(currentTime)
 
-  // Check if there are more than QueryCacheThresh queries
-  return requests.Len() >= storagerpc.QueryCacheThresh
+	// Check if there are more than QueryCacheThresh queries
+	return requests.Len() >= storagerpc.QueryCacheThresh
 }
 
 // Check if there's a valid leased cache element for key
 func validLeaseItem(ls *libstore, key string) bool {
-  item, ok := ls.itemCache[key]
+	item, ok := ls.itemCache[key]
 
-  return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
+	return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
 }
 func validLeaseList(ls *libstore, key string) bool {
-  item, ok := ls.listCache[key]
+	item, ok := ls.listCache[key]
 
-  return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
+	return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -188,12 +188,12 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 func (ls *libstore) Get(key string) (string, error) {
 	routedServer := determineNode(ls, key)
 	wantLease := requiresLease(ls, key)
-  currentTime := time.Now()
+	currentTime := time.Now()
 
-  // If wantLease and there's a valid cached element, return cached element
-  if wantLease && validLeaseItem(ls, key) {
-    return ls.itemCache[key].value, nil
-  }
+	// If wantLease and there's a valid cached element, return cached element
+	if wantLease && validLeaseItem(ls, key) {
+		return ls.itemCache[key].value, nil
+	}
 
 	args := &storagerpc.GetArgs{
 		Key:       key,
@@ -206,14 +206,14 @@ func (ls *libstore) Get(key string) (string, error) {
 	}
 
 	if reply.Status == storagerpc.OK {
-    // Cache value if WantLease was set true
-    if wantLease && reply.Lease.Granted {
-      ls.itemCache[key] = &leaseItem{
-        value: reply.Value,
-        inserted: currentTime,
-        validSeconds: reply.Lease.ValidSeconds,
-      }
-    }
+		// Cache value if WantLease was set true
+		if wantLease && reply.Lease.Granted {
+			ls.itemCache[key] = &leaseItem{
+				value:        reply.Value,
+				inserted:     currentTime,
+				validSeconds: reply.Lease.ValidSeconds,
+			}
+		}
 
 		return reply.Value, nil
 	} else {
@@ -243,12 +243,12 @@ func (ls *libstore) Put(key, value string) error {
 func (ls *libstore) GetList(key string) ([]string, error) {
 	routedServer := determineNode(ls, key)
 	wantLease := requiresLease(ls, key)
-  currentTime := time.Now()
+	currentTime := time.Now()
 
-  // If wantLease and there's a valid cached element, return cached element
-  if wantLease && validLeaseList(ls, key) {
-    return ls.listCache[key].value, nil
-  }
+	// If wantLease and there's a valid cached element, return cached element
+	if wantLease && validLeaseList(ls, key) {
+		return ls.listCache[key].value, nil
+	}
 
 	args := &storagerpc.GetArgs{
 		Key:       key,
@@ -261,14 +261,14 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	}
 
 	if reply.Status == storagerpc.OK {
-    // Cache value if WantLease was set true
-    if wantLease && reply.Lease.Granted {
-      ls.listCache[key] = &leaseList{
-        value: reply.Value,
-        inserted: currentTime,
-        validSeconds: reply.Lease.ValidSeconds,
-      }
-    }
+		// Cache value if WantLease was set true
+		if wantLease && reply.Lease.Granted {
+			ls.listCache[key] = &leaseList{
+				value:        reply.Value,
+				inserted:     currentTime,
+				validSeconds: reply.Lease.ValidSeconds,
+			}
+		}
 
 		return reply.Value, nil
 	} else {
@@ -315,21 +315,21 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-  _, ok := ls.itemCache[args.Key]
+	_, ok := ls.itemCache[args.Key]
 
-  if ok {
-    delete(ls.itemCache, args.Key)
-    reply.Status = storagerpc.OK
-    return nil
-  }
+	if ok {
+		delete(ls.itemCache, args.Key)
+		reply.Status = storagerpc.OK
+		return nil
+	}
 
-  _, ok = ls.listCache[args.Key]
-  if ok {
-    delete(ls.listCache, args.Key)
-    reply.Status = storagerpc.OK
-  } else {
-    reply.Status = storagerpc.KeyNotFound
-  }
+	_, ok = ls.listCache[args.Key]
+	if ok {
+		delete(ls.listCache, args.Key)
+		reply.Status = storagerpc.OK
+	} else {
+		reply.Status = storagerpc.KeyNotFound
+	}
 
-  return nil
+	return nil
 }
