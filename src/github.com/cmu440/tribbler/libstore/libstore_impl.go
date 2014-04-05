@@ -1,6 +1,7 @@
 package libstore
 
 import (
+	"container/list"
 	"errors"
 	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
@@ -18,10 +19,26 @@ const (
 	maxAttempts int = 5
 )
 
+type leaseItem struct {
+  value string
+  inserted time.Time
+  validSeconds int
+}
+
+type leaseList struct {
+  value []string
+  inserted time.Time
+  validSeconds int
+}
+
 type libstore struct {
 	servers  map[uint32]*rpc.Client // Map from NodeID to storage server connection
 	mode     LeaseMode
 	hostport string
+
+	leaseManager map[string]*list.List // Keep track of requests from the last QueryCacheSeconds seconds
+	itemCache    map[string]*leaseItem
+	listCache    map[string]*leaseList
 }
 
 var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
@@ -43,6 +60,49 @@ func determineNode(ls *libstore, key string) *rpc.Client {
 		return ls.servers[minNodeID]
 	}
 	return ls.servers[matchedNodeID]
+}
+
+func requiresLease(ls *libstore, key string) bool {
+  if ls.mode == Never {
+    return false
+  } else if ls.mode == Always {
+    return true
+  }
+  
+  // Fetch or create list of past requests corresponding to key
+	requests, ok := ls.leaseManager[key]
+  if !ok {
+    requests = list.New()
+    ls.leaseManager[key] = requests
+  }
+
+  currentTime := time.Now()
+
+  // Remove all requests that are older than QueryCacheSeconds
+	for e := requests.Front(); e != nil; e = e.Next() {
+		queryTime := e.Value.(time.Time)
+    if currentTime.Sub(queryTime).Seconds() > storagerpc.QueryCacheSeconds {
+      requests.Remove(e)
+    }
+  }
+
+  // Add new request
+  requests.PushBack(currentTime)
+
+  // Check if there are more than QueryCacheThresh queries
+  return requests.Len() >= storagerpc.QueryCacheThresh
+}
+
+// Check if there's a valid leased cache element for key
+func validLeaseItem(ls *libstore, key string) bool {
+  item, ok := ls.itemCache[key]
+
+  return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
+}
+func validLeaseList(ls *libstore, key string) bool {
+  item, ok := ls.listCache[key]
+
+  return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -111,9 +171,12 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 
 	// Create libstore and register it for RPC callbacks
 	libstore := &libstore{
-		servers:  servers,
-		mode:     mode,
-		hostport: myHostPort,
+		servers:      servers,
+		mode:         mode,
+		hostport:     myHostPort,
+		leaseManager: make(map[string]*list.List),
+		itemCache:    make(map[string]*leaseItem),
+		listCache:    make(map[string]*leaseList),
 	}
 	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
 	if err != nil {
@@ -124,8 +187,13 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 
 func (ls *libstore) Get(key string) (string, error) {
 	routedServer := determineNode(ls, key)
-	// TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
-	wantLease := false
+	wantLease := requiresLease(ls, key)
+  currentTime := time.Now()
+
+  // If wantLease and there's a valid cached element, return cached element
+  if wantLease && validLeaseItem(ls, key) {
+    return ls.itemCache[key].value, nil
+  }
 
 	args := &storagerpc.GetArgs{
 		Key:       key,
@@ -138,6 +206,15 @@ func (ls *libstore) Get(key string) (string, error) {
 	}
 
 	if reply.Status == storagerpc.OK {
+    // Cache value if WantLease was set true
+    if wantLease && reply.Lease.Granted {
+      ls.itemCache[key] = &leaseItem{
+        value: reply.Value,
+        inserted: currentTime,
+        validSeconds: reply.Lease.ValidSeconds,
+      }
+    }
+
 		return reply.Value, nil
 	} else {
 		return "", errors.New("Error in Get request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
@@ -165,8 +242,13 @@ func (ls *libstore) Put(key, value string) error {
 
 func (ls *libstore) GetList(key string) ([]string, error) {
 	routedServer := determineNode(ls, key)
-	// TODO(wesley): Set appropriate lease mode as part of part 3 of libstore
-	wantLease := false
+	wantLease := requiresLease(ls, key)
+  currentTime := time.Now()
+
+  // If wantLease and there's a valid cached element, return cached element
+  if wantLease && validLeaseList(ls, key) {
+    return ls.listCache[key].value, nil
+  }
 
 	args := &storagerpc.GetArgs{
 		Key:       key,
@@ -179,6 +261,15 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	}
 
 	if reply.Status == storagerpc.OK {
+    // Cache value if WantLease was set true
+    if wantLease && reply.Lease.Granted {
+      ls.listCache[key] = &leaseList{
+        value: reply.Value,
+        inserted: currentTime,
+        validSeconds: reply.Lease.ValidSeconds,
+      }
+    }
+
 		return reply.Value, nil
 	} else {
 		return nil, errors.New("Error in GetList request to StorageServer. Status: " + strconv.Itoa(int(reply.Status)))
@@ -224,5 +315,21 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
+  _, ok := ls.itemCache[args.Key]
+
+  if ok {
+    delete(ls.itemCache, args.Key)
+    reply.Status = storagerpc.OK
+    return nil
+  }
+
+  _, ok = ls.listCache[args.Key]
+  if ok {
+    delete(ls.listCache, args.Key)
+    reply.Status = storagerpc.OK
+  } else {
+    reply.Status = storagerpc.KeyNotFound
+  }
+
+  return nil
 }

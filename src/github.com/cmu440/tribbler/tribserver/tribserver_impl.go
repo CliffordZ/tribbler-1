@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	leaseMode         libstore.LeaseMode = libstore.Never
+	leaseMode         libstore.LeaseMode = libstore.Normal
 	subscriptionToken string             = ":s"
 	tribbleToken      string             = ":t"
 	userToken         string             = ":u"
