@@ -4,14 +4,23 @@ import (
 	"container/list"
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const leaseSeconds = storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds
+
+type leaseTracker struct {
+	hostport  string
+	grantedAt time.Time
+}
 
 type storageServer struct {
 	nodeID         uint32
@@ -23,7 +32,13 @@ type storageServer struct {
 
 	itemDatastore map[string]string
 	listDatastore map[string]*list.List
+
+	leaseMap      map[string]*list.List  // Keep track of which libstores have leases for a given key
+	grantMap      map[string]bool        // Keep track of if a lease can be granted for a given key
+	libstoreConns map[string]*rpc.Client // Cache http connections to libstore clients
 }
+
+var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
 
 // Confirm that request has been routed to correct storage server
 func isCorrectStorageServer(ss *storageServer, key string) bool {
@@ -39,6 +54,105 @@ func isCorrectStorageServer(ss *storageServer, key string) bool {
 	}
 
 	return (matchedNodeID == math.MaxUint32 && ss.nodeID == minNodeID) || ss.nodeID == matchedNodeID
+}
+
+// Create and cache libstore connection
+func cacheLibstoreConnection(ss *storageServer, hostport string) {
+	_, ok := ss.libstoreConns[hostport]
+
+	if !ok {
+		libstore, _ := rpc.DialHTTP("tcp", hostport)
+		ss.libstoreConns[hostport] = libstore
+	}
+}
+
+// Determine if lease can currently be granted for a given key
+func canGrantLease(ss *storageServer, key string) bool {
+	grantable, ok := ss.grantMap[key]
+	return !ok || grantable
+}
+
+// Handle lease request in Get or GetList
+func handleLeaseRequest(ss *storageServer, key, hostport string) storagerpc.Lease {
+	cacheLibstoreConnection(ss, hostport)
+
+	lease := storagerpc.Lease{
+		Granted:      false,
+		ValidSeconds: 0,
+	}
+	if canGrantLease(ss, key) {
+		lease.Granted = true
+		lease.ValidSeconds = storagerpc.LeaseSeconds
+
+		// Add libstore hostport to leaseMap
+		leases, ok := ss.leaseMap[key]
+		if !ok {
+			leases = list.New()
+			ss.leaseMap[key] = leases
+		}
+		tracker := &leaseTracker{
+			hostport:  hostport,
+			grantedAt: time.Now(),
+		}
+		leases.PushBack(tracker)
+	}
+
+	return lease
+}
+
+// Revoke and block leases from being granted for a given key
+func revokeAndBlockLeases(ss *storageServer, key string) error {
+	// Prevent new leases from being granted
+	ss.grantMap[key] = false
+
+	// Revoke all leases and wait for responses
+	leases, ok := ss.leaseMap[key]
+
+	if ok {
+		// For each lease, we send the RevokeLease rpc call to it
+		for e := leases.Front(); e != nil; e = e.Next() {
+			leaseTracker := e.Value.(*leaseTracker)
+
+			if !leaseExpired(leaseTracker.grantedAt) {
+				conn := ss.libstoreConns[leaseTracker.hostport]
+				args := &storagerpc.RevokeLeaseArgs{
+					Key: key,
+				}
+				reply := &storagerpc.RevokeLeaseReply{}
+
+				// Terrible
+				ch := make(chan error)
+				go func() {
+					if err := conn.Call("LeaseCallbacks.RevokeLease", args, reply); err != nil {
+						ch <- err
+					}
+					ch <- nil
+				}()
+
+				timeoutSeconds := leaseSeconds - time.Since(leaseTracker.grantedAt).Seconds()
+				select {
+				case err := <-ch:
+					if err != nil {
+						return err
+					}
+					break
+				case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+					break
+				}
+			}
+
+			// TODO(wesley): We probably have to do something with the reply here
+
+			leases.Remove(e)
+		}
+	}
+
+	return nil
+}
+
+// Checks if a lease has expired
+func leaseExpired(grantedAt time.Time) bool {
+	return time.Since(grantedAt).Seconds() > (storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds)
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -65,6 +179,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		newServerReply: make(chan storagerpc.RegisterReply),
 		itemDatastore:  make(map[string]string),
 		listDatastore:  make(map[string]*list.List),
+		leaseMap:       make(map[string]*list.List),
+		grantMap:       make(map[string]bool),
+		libstoreConns:  make(map[string]*rpc.Client),
 	}
 
 	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
@@ -174,11 +291,15 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 	value, ok := ss.itemDatastore[args.Key]
 
 	if !ok {
+		LOGE.Println("Key not found get")
 		reply.Status = storagerpc.KeyNotFound
 	} else {
+		if args.WantLease {
+			reply.Lease = handleLeaseRequest(ss, args.Key, args.HostPort)
+		}
+
 		reply.Status = storagerpc.OK
 		reply.Value = value
-		//TODO: Implement Leasing
 	}
 	return nil
 }
@@ -192,6 +313,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 	ls, ok := ss.listDatastore[args.Key]
 
 	if !ok {
+		LOGE.Println("Key not found getlist")
 		reply.Status = storagerpc.KeyNotFound
 	} else {
 		values := make([]string, ls.Len())
@@ -202,6 +324,9 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 			index++
 		}
 
+		if args.WantLease {
+			reply.Lease = handleLeaseRequest(ss, args.Key, args.HostPort)
+		}
 		reply.Status = storagerpc.OK
 		reply.Value = values
 	}
@@ -214,7 +339,17 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 		return nil
 	}
 
+	err := revokeAndBlockLeases(ss, args.Key)
+	if err != nil {
+		LOGE.Println("FUCK")
+		return err
+	}
+
+	// Put value into datastore
 	ss.itemDatastore[args.Key] = args.Value
+
+	// Allow leases to be granted again
+	ss.grantMap[args.Key] = true
 
 	reply.Status = storagerpc.OK
 	return nil
@@ -226,11 +361,17 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		return nil
 	}
 
+	err := revokeAndBlockLeases(ss, args.Key)
+	if err != nil {
+		return err
+	}
+
 	ls, ok := ss.listDatastore[args.Key]
 
 	// Create new list if one doesn't already exist
 	if !ok {
 		ls = list.New()
+		ss.listDatastore[args.Key] = ls
 	}
 
 	// Check if item is already in the list
@@ -239,11 +380,19 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 
 		if args.Value == value {
 			reply.Status = storagerpc.ItemExists
+
+			// Allow leases to be granted again
+			ss.grantMap[args.Key] = true
+
 			return nil
 		}
 	}
 
 	ls.PushBack(args.Value)
+
+	// Allow leases to be granted again
+	ss.grantMap[args.Key] = true
+
 	reply.Status = storagerpc.OK
 	return nil
 }
@@ -254,10 +403,18 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		return nil
 	}
 
+	err := revokeAndBlockLeases(ss, args.Key)
+	if err != nil {
+		return err
+	}
+
 	ls, ok := ss.listDatastore[args.Key]
 
 	// If no list, reply with item not found
 	if !ok {
+		// Allow leases to be granted again
+		ss.grantMap[args.Key] = true
+
 		reply.Status = storagerpc.ItemNotFound
 		return nil
 	}
@@ -267,10 +424,17 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 
 		if args.Value == value {
 			ls.Remove(e)
+
+			// Allow leases to be granted again
+			ss.grantMap[args.Key] = true
+
 			reply.Status = storagerpc.OK
 			return nil
 		}
 	}
+
+	// Allow leases to be granted again
+	ss.grantMap[args.Key] = true
 
 	// If item not found, reply with item not found
 	reply.Status = storagerpc.ItemNotFound
