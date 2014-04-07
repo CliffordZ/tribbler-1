@@ -114,34 +114,19 @@ func revokeAndBlockLeases(ss *storageServer, key string) error {
 			leaseTracker := e.Value.(*leaseTracker)
 
 			if !leaseExpired(leaseTracker.grantedAt) {
-				conn := ss.libstoreConns[leaseTracker.hostport]
 				args := &storagerpc.RevokeLeaseArgs{
 					Key: key,
 				}
 				reply := &storagerpc.RevokeLeaseReply{}
-
-				// Terrible
-				ch := make(chan error)
-				go func() {
-					if err := conn.Call("LeaseCallbacks.RevokeLease", args, reply); err != nil {
-						ch <- err
-					}
-					ch <- nil
-				}()
-
+				asyncCall := ss.libstoreConns[leaseTracker.hostport].Go("LeaseCallbacks.RevokeLease", args, reply, nil)
 				timeoutSeconds := leaseSeconds - time.Since(leaseTracker.grantedAt).Seconds()
 				select {
-				case err := <-ch:
-					if err != nil {
-						return err
-					}
+				case <-asyncCall.Done:
 					break
 				case <-time.After(time.Duration(timeoutSeconds) * time.Second):
 					break
 				}
 			}
-
-			// TODO(wesley): We probably have to do something with the reply here
 
 			leases.Remove(e)
 		}
