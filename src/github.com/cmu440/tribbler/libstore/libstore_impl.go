@@ -105,6 +105,16 @@ func validLeaseList(ls *libstore, key string) bool {
 	return ok && int(time.Since(item.inserted).Seconds()) < item.validSeconds
 }
 
+func itemLeaseTimer(ls *libstore, key string, timeoutSeconds int) {
+  time.Sleep(time.Duration(timeoutSeconds) * time.Second)
+  delete(ls.itemCache, key)
+}
+
+func listLeaseTimer(ls *libstore, key string, timeoutSeconds int) {
+  time.Sleep(time.Duration(timeoutSeconds) * time.Second)
+  delete(ls.listCache, key)
+}
+
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
 // is the master storage server's host:port. myHostPort is this Libstore's host:port
 // (i.e. the callback address that the storage servers should use to send back
@@ -213,6 +223,7 @@ func (ls *libstore) Get(key string) (string, error) {
 				inserted:     currentTime,
 				validSeconds: reply.Lease.ValidSeconds,
 			}
+      go itemLeaseTimer(ls, key, reply.Lease.ValidSeconds)
 		}
 
 		return reply.Value, nil
@@ -268,6 +279,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 				inserted:     currentTime,
 				validSeconds: reply.Lease.ValidSeconds,
 			}
+      go listLeaseTimer(ls, key, reply.Lease.ValidSeconds)
 		}
 
 		return reply.Value, nil
