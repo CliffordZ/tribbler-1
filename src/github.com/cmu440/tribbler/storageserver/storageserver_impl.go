@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,11 @@ type storageServer struct {
 	leaseMap      map[string]*list.List  // Keep track of which libstores have leases for a given key
 	grantMap      map[string]bool        // Keep track of if a lease can be granted for a given key
 	libstoreConns map[string]*rpc.Client // Cache http connections to libstore clients
+
+	// mutexes
+	itemLock  *sync.Mutex
+	listLock  *sync.Mutex
+	leaseLock *sync.Mutex
 }
 
 var LOGE = log.New(os.Stderr, "", log.Lshortfile|log.Lmicroseconds)
@@ -167,6 +173,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		leaseMap:       make(map[string]*list.List),
 		grantMap:       make(map[string]bool),
 		libstoreConns:  make(map[string]*rpc.Client),
+		itemLock:       &sync.Mutex{},
+		listLock:       &sync.Mutex{},
+		leaseLock:      &sync.Mutex{},
 	}
 
 	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
@@ -185,16 +194,14 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	//If not master server, register slave
 	if masterServerHostPort != "" {
 		//Setup connection with master server
-		masterServer, err := rpc.DialHTTP("tcp", masterServerHostPort)
+		masterServer, _ := rpc.DialHTTP("tcp", masterServerHostPort)
 		args := &storagerpc.RegisterArgs{
 			ServerInfo: *node,
 		}
 		reply := &storagerpc.RegisterReply{}
 		for {
 			//Make register server rpc call
-			if err = masterServer.Call("StorageServer.RegisterServer", args, reply); err != nil {
-				return nil, err
-			}
+			masterServer.Call("StorageServer.RegisterServer", args, reply)
 			//If the master server is not ready, sleep and keep pinging server
 			if reply.Status == storagerpc.NotReady {
 				time.Sleep(time.Second)
@@ -295,6 +302,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 		return nil
 	}
 
+	ss.listLock.Lock()
 	ls, ok := ss.listDatastore[args.Key]
 
 	if !ok {
@@ -315,6 +323,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 		reply.Status = storagerpc.OK
 		reply.Value = values
 	}
+	ss.listLock.Unlock()
 	return nil
 }
 
@@ -351,6 +360,8 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		return err
 	}
 
+	ss.listLock.Lock()
+
 	ls, ok := ss.listDatastore[args.Key]
 
 	// Create new list if one doesn't already exist
@@ -364,11 +375,10 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		value := e.Value.(string)
 
 		if args.Value == value {
-			reply.Status = storagerpc.ItemExists
-
 			// Allow leases to be granted again
 			ss.grantMap[args.Key] = true
-
+			reply.Status = storagerpc.ItemExists
+			ss.listLock.Unlock()
 			return nil
 		}
 	}
@@ -377,8 +387,8 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 
 	// Allow leases to be granted again
 	ss.grantMap[args.Key] = true
-
 	reply.Status = storagerpc.OK
+	ss.listLock.Unlock()
 	return nil
 }
 
@@ -393,6 +403,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		return err
 	}
 
+	ss.listLock.Lock()
 	ls, ok := ss.listDatastore[args.Key]
 
 	// If no list, reply with item not found
@@ -401,6 +412,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		ss.grantMap[args.Key] = true
 
 		reply.Status = storagerpc.ItemNotFound
+		ss.listLock.Unlock()
 		return nil
 	}
 
@@ -412,8 +424,8 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 
 			// Allow leases to be granted again
 			ss.grantMap[args.Key] = true
-
 			reply.Status = storagerpc.OK
+			ss.listLock.Unlock()
 			return nil
 		}
 	}
@@ -423,5 +435,6 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 
 	// If item not found, reply with item not found
 	reply.Status = storagerpc.ItemNotFound
+	ss.listLock.Unlock()
 	return nil
 }
