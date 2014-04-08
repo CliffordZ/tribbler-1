@@ -136,8 +136,11 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	if err == nil {
 		reply.Status = tribrpc.OK
 		reply.UserIDs = subscriptions
+	} else {
+		reply.Status = tribrpc.OK
+		reply.UserIDs = []string{}
 	}
-	return err
+	return nil
 }
 
 func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.PostTribbleReply) error {
